@@ -34,7 +34,7 @@ def get_last_pub_date(dbname, user, host, port):
     return result or datetime.min
 
 def get_articles(url, last_pub_date):
-    soup = BeautifulSoup(requests.get(url=url).text, "xml")
+    soup = BeautifulSoup(requests.get(url=url).text, 'xml')
     article_items = [item for item in soup.find_all('item') if 'articles' in item.find('link').text]
     articles = []
 
@@ -59,7 +59,7 @@ def get_articles(url, last_pub_date):
 
 def get_article_from_item(item):
     pub_date_str = item.find('pubDate').text
-    pub_date = datetime.strptime(pub_date_str, "%a, %d %b %Y %H:%M:%S %Z").strftime("%Y-%m-%d %H:%M:%S")
+    pub_date = datetime.strptime(pub_date_str, '%a, %d %b %Y %H:%M:%S %Z').strftime('%Y-%m-%d %H:%M:%S')
     item_url = item.find('link').text
     title = item.find('title').text
     description = item.find('description').text
