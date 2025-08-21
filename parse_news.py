@@ -4,6 +4,8 @@ import os
 from datetime import datetime
 import psycopg2
 from dotenv import load_dotenv
+from airflow import DAG
+from airflow.providers.standard.operators.python import PythonOperator
 
 
 
@@ -21,20 +23,22 @@ class Article:
 
 
 
-def get_articles(url):
+
+def get_last_pub_date(dbname, user, host, port):
+    conn = psycopg2.connect(dbname=dbname, user=user, host=host, port=port)
+    cursor = conn.cursor()
+    cursor.execute("SELECT MAX(pub_date) FROM articles;")
+    result = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return result or datetime.min
+
+def get_articles(url, last_pub_date):
     soup = BeautifulSoup(requests.get(url=url).text, "xml")
     article_items = [item for item in soup.find_all('item') if 'articles' in item.find('link').text]
     articles = []
 
-    if not os.path.exists('last_fetch_time.txt'):
-        with open('last_fetch_time.txt', 'w') as f:
-            f.write(datetime.min.strftime("%Y-%m-%d %H:%M:%S"))
-
-    with open('last_fetch_time.txt', 'r') as last_fetch_file:
-        last_fetch_time_str = last_fetch_file.read()
-
-    last_fetch_time = datetime.strptime(last_fetch_time_str, "%Y-%m-%d %H:%M:%S") if last_fetch_time_str else datetime.min
-    newest_pub_date = last_fetch_time
+    newest_pub_date = last_pub_date
 
     articles_counter = 0
 
@@ -42,14 +46,12 @@ def get_articles(url):
         pub_date_str = item.find('pubDate').text
         pub_date = datetime.strptime(pub_date_str, "%a, %d %b %Y %H:%M:%S %Z")
 
-        if pub_date > last_fetch_time:
+        if pub_date > last_pub_date:
             articles_counter += 1
             articles.append(get_article_from_item(item))
             if pub_date > newest_pub_date:
                 newest_pub_date = pub_date
 
-    with open('last_fetch_time.txt', 'w') as last_fetch_file:
-        last_fetch_file.write(datetime.strftime(newest_pub_date, "%Y-%m-%d %H:%M:%S"))
     print(f'articles found: {articles_counter}')
 
     return articles
@@ -73,7 +75,13 @@ def get_article_text(url):
     return ' '.join(paragraphs)
 
 
-def create_articles_table(conn):
+def create_articles_table(dbname, user, host, port):
+    conn = psycopg2.connect(
+        dbname=dbname,
+        user=user,
+        host=host,
+        port=port
+    )
     cursor = conn.cursor()
     create_table_query = '''
     CREATE TABLE IF NOT EXISTS articles (
@@ -89,10 +97,22 @@ def create_articles_table(conn):
     cursor.execute(create_table_query)
     conn.commit()
     cursor.close()
+    conn.close()
     print('Table articles created or already existed')
 
 
-def insert_articles(conn, articles):
+def process_articles(links_url, dbname, user, host, port):
+    articles = get_articles(links_url, get_last_pub_date(dbname, user, host, port))
+    insert_articles(dbname, user, host, port, articles)
+
+
+def insert_articles(dbname, user, host, port, articles):
+    conn = psycopg2.connect(
+        dbname = dbname,
+        user = user,
+        host = host,
+        port = port
+    )
     cursor = conn.cursor()
     for article in articles:
         insert_article_query = '''
@@ -103,18 +123,36 @@ def insert_articles(conn, articles):
     conn.commit()
     print(f'{len(articles)} inserted')
     cursor.close()
+    conn.close()
 
 
 load_dotenv()
-conn = psycopg2.connect(
-    dbname=os.environ['DB_NAME'],
-    user=os.environ['DB_USER'],
-    host=os.environ['DB_HOST'],
-    port=os.environ['DB_PORT']
-)
+dbname = os.environ['DB_NAME']
+user = os.environ['DB_USER']
+host = os.environ['DB_HOST']
+port = os.environ['DB_PORT']
 links_url = 'https://feeds.bbci.co.uk/news/world/rss.xml'
-articles = get_articles(links_url)
-create_articles_table(conn)
-insert_articles(conn, articles)
-conn.close()
 
+
+daily_news_dag = DAG(
+    dag_id='daily_news',
+    start_date=datetime(2025, 1, 1),
+    schedule='@daily',
+    catchup=False
+)
+
+create_table_task = PythonOperator(
+    task_id='create_table',
+    python_callable=create_articles_table,
+    op_args=[dbname, user, host, port],
+    dag=daily_news_dag
+)
+
+process_articles_task = PythonOperator(
+    task_id='process_articles',
+    python_callable=process_articles,
+    op_args=[links_url, dbname, user, host, port],
+    dag=daily_news_dag
+)
+
+create_table_task >> process_articles_task
