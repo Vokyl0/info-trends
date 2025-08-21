@@ -2,6 +2,10 @@ import requests
 from bs4 import BeautifulSoup
 import os
 from datetime import datetime
+import psycopg2
+from dotenv import load_dotenv
+
+
 
 class Article:
     def __init__(self, url, title, description, text, pub_date):
@@ -69,11 +73,48 @@ def get_article_text(url):
     return ' '.join(paragraphs)
 
 
+def create_articles_table(conn):
+    cursor = conn.cursor()
+    create_table_query = '''
+    CREATE TABLE IF NOT EXISTS articles (
+        id SERIAL PRIMARY KEY,
+        url TEXT NOT NULL,
+        title TEXT,
+        description TEXT,
+        content TEXT,
+        pub_date TIMESTAMP
+    );
+    '''
+
+    cursor.execute(create_table_query)
+    conn.commit()
+    cursor.close()
+    print('Table articles created or already existed')
 
 
+def insert_articles(conn, articles):
+    cursor = conn.cursor()
+    for article in articles:
+        insert_article_query = '''
+        INSERT INTO articles (url, title, description, content, pub_date) 
+        VALUES (%s, %s, %s, %s, %s)
+        '''
+        cursor.execute(insert_article_query, (article.url, article.title, article.description, article.text, article.pub_date))
+    conn.commit()
+    print(f'{len(articles)} inserted')
+    cursor.close()
+
+
+load_dotenv()
+conn = psycopg2.connect(
+    dbname=os.environ['DB_NAME'],
+    user=os.environ['DB_USER'],
+    host=os.environ['DB_HOST'],
+    port=os.environ['DB_PORT']
+)
 links_url = 'https://feeds.bbci.co.uk/news/world/rss.xml'
 articles = get_articles(links_url)
-with open('result_file', 'a', encoding='utf-8') as f:
-    for article in articles:
-        f.write(str(article) + '\n')
+create_articles_table(conn)
+insert_articles(conn, articles)
+conn.close()
 
